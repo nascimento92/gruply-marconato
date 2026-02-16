@@ -41,11 +41,12 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   const [stockMovements, setStockMovements] = useState<StockMovement[]>([])
   const { showToast } = useToast()
 
+  // Effect para Monitorar Autenticação
   useEffect(() => {
-    import('../infrastructure/firebase/config').then(async ({ auth, db }) => {
-      const { onSnapshot, collection, query, orderBy } = await import('firebase/firestore')
+    let unsubscribeAuth: (() => void) | undefined
 
-      const unsubscribeAuth = onAuthStateChanged(auth, (firebaseUser) => {
+    import('../infrastructure/firebase/config').then(({ auth }) => {
+      unsubscribeAuth = onAuthStateChanged(auth, (firebaseUser) => {
         if (firebaseUser) {
           setUser({
             id: firebaseUser.uid,
@@ -55,45 +56,82 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           })
         } else {
           setUser(null)
+          setCustomers([])
+          setProducts([])
+          setStockMovements([])
         }
       })
-
-      // Real-time listener for customers
-      const unsubscribeCustomers = onSnapshot(collection(db, 'customers'), (snapshot: any) => {
-        const customersData = snapshot.docs.map((doc: any) => ({
-          id: doc.id,
-          ...doc.data(),
-        })) as Customer[]
-        setCustomers(customersData)
-      })
-
-      // Real-time listener for products
-      const unsubscribeProducts = onSnapshot(collection(db, 'products'), (snapshot: any) => {
-        const productsData = snapshot.docs.map((doc: any) => ({
-          id: doc.id,
-          ...doc.data(),
-        })) as Product[]
-        setProducts(productsData)
-      })
-
-      // Real-time listener for stock movements
-      const q = query(collection(db, 'stock_movements'), orderBy('date', 'desc'))
-      const unsubscribeMovements = onSnapshot(q, (snapshot: any) => {
-        const movementsData = snapshot.docs.map((doc: any) => ({
-          id: doc.id,
-          ...doc.data(),
-        })) as StockMovement[]
-        setStockMovements(movementsData)
-      })
-
-      return () => {
-        unsubscribeAuth()
-        unsubscribeCustomers()
-        unsubscribeProducts()
-        unsubscribeMovements()
-      }
     }).catch(console.error)
+
+    return () => {
+      if (unsubscribeAuth) unsubscribeAuth()
+    }
   }, [])
+
+  // Effect para Monitorar Dados (Só roda quando tem usuário)
+  useEffect(() => {
+    if (!user) return
+
+    let unsubscribeCustomers: (() => void) | undefined
+    let unsubscribeProducts: (() => void) | undefined
+    let unsubscribeMovements: (() => void) | undefined
+
+    const setupListeners = async () => {
+      try {
+        const { db } = await import('../infrastructure/firebase/config')
+        const { onSnapshot, collection, query, orderBy } = await import('firebase/firestore')
+
+        // Real-time listener for customers
+        unsubscribeCustomers = onSnapshot(collection(db, 'customers'), (snapshot) => {
+          const customersData = snapshot.docs.map((doc) => ({
+            id: doc.id,
+            ...doc.data(),
+          })) as Customer[]
+          setCustomers(customersData)
+        }, (error) => {
+          console.error("Erro ao buscar clientes:", error)
+          if (error.code === 'permission-denied') {
+            showToast('Sem permissão para visualizar clientes.', 'error')
+          }
+        })
+
+        // Real-time listener for products
+        unsubscribeProducts = onSnapshot(collection(db, 'products'), (snapshot) => {
+          const productsData = snapshot.docs.map((doc) => ({
+            id: doc.id,
+            ...doc.data(),
+          })) as Product[]
+          setProducts(productsData)
+        }, (error) => {
+          console.error("Erro ao buscar produtos:", error)
+        })
+
+        // Real-time listener for stock movements
+        const q = query(collection(db, 'stock_movements'), orderBy('date', 'desc'))
+        unsubscribeMovements = onSnapshot(q, (snapshot) => {
+          const movementsData = snapshot.docs.map((doc) => ({
+            id: doc.id,
+            ...doc.data(),
+          })) as StockMovement[]
+          setStockMovements(movementsData)
+        }, (error) => {
+          console.error("Erro ao buscar movimentações:", error)
+        })
+
+      } catch (error) {
+        console.error("Erro ao configurar listeners:", error)
+      }
+    }
+
+    setupListeners()
+
+    // Cleanup function
+    return () => {
+      if (unsubscribeCustomers) unsubscribeCustomers()
+      if (unsubscribeProducts) unsubscribeProducts()
+      if (unsubscribeMovements) unsubscribeMovements()
+    }
+  }, [user]) // Dependência: user. Roda quando o usuário loga/desloga.
 
   const login = async (credentials: Credentials) => {
     try {
